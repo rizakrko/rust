@@ -8,13 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// aux-build:issue_38715.rs
+#[macro_export]
+macro_rules! foo { ($i:ident) => {} }
 
-// Test that `#[macro_export] macro_rules!` shadow earlier `#[macro_export] macro_rules!`
-
-#[macro_use]
-extern crate issue_38715;
-
-fn main() {
-    foo!();
-}
+#[macro_export]
+macro_rules! foo { () => {} } //~ ERROR a macro named `foo` has already been exported

@@ -887,14 +887,24 @@ impl<'a, 'b:'a> ImportResolver<'a, 'b> {
         // Since import resolution is finished, globs will not define any more names.
         *module.globs.borrow_mut() = Vec::new();
 
+        let report_already_exported = |this: &mut Self, ident, span, prev_span| {
+            let msg = format!("a macro named `{}` has already been exported", ident);
+            this.session.struct_span_err(span, &msg)
+                .span_label(span, format!("`{}` already exported", ident))
+                .span_note(prev_span, "previous macro export here")
+                .emit();
+        };
+
         let mut reexports = Vec::new();
         let mut exported_macro_names = FxHashMap();
         if module as *const _ == self.graph_root as *const _ {
             let macro_exports = mem::replace(&mut self.macro_exports, Vec::new());
-            for export in macro_exports.into_iter().rev() {
-                if exported_macro_names.insert(export.ident.modern(), export.span).is_none() {
-                    reexports.push(export);
+            for export in macro_exports.into_iter() {
+                if let Some(prev_span) = exported_macro_names.insert(export.ident.modern(),
+                                                                     export.span) {
+                    report_already_exported(self, export.ident, export.span, prev_span);
                 }
+                reexports.push(export);
             }
         }
 
@@ -912,13 +922,8 @@ impl<'a, 'b:'a> ImportResolver<'a, 'b> {
                         self.cstore.export_macros_untracked(def.def_id().krate);
                     }
                     if let Def::Macro(..) = def {
-                        if let Some(&span) = exported_macro_names.get(&ident.modern()) {
-                            let msg =
-                                format!("a macro named `{}` has already been exported", ident);
-                            self.session.struct_span_err(span, &msg)
-                                .span_label(span, format!("`{}` already exported", ident))
-                                .span_note(binding.span, "previous macro export here")
-                                .emit();
+                        if let Some(legacy_span) = exported_macro_names.get(&ident.modern()) {
+                            report_already_exported(self, ident, *legacy_span, binding.span);
                         }
                     }
                     reexports.push(Export {
