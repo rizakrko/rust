@@ -204,7 +204,7 @@ impl Duration {
     /// [`subsec_nanos`]: #method.subsec_nanos
     #[stable(feature = "duration", since = "1.3.0")]
     #[inline]
-    pub fn as_secs(&self) -> u64 { self.secs }
+    pub const fn as_secs(&self) -> u64 { self.secs }
 
     /// Returns the fractional part of this `Duration`, in milliseconds.
     ///
@@ -223,7 +223,7 @@ impl Duration {
     /// ```
     #[stable(feature = "duration_extras", since = "1.27.0")]
     #[inline]
-    pub fn subsec_millis(&self) -> u32 { self.nanos / NANOS_PER_MILLI }
+    pub const fn subsec_millis(&self) -> u32 { self.nanos / NANOS_PER_MILLI }
 
     /// Returns the fractional part of this `Duration`, in microseconds.
     ///
@@ -242,7 +242,7 @@ impl Duration {
     /// ```
     #[stable(feature = "duration_extras", since = "1.27.0")]
     #[inline]
-    pub fn subsec_micros(&self) -> u32 { self.nanos / NANOS_PER_MICRO }
+    pub const fn subsec_micros(&self) -> u32 { self.nanos / NANOS_PER_MICRO }
 
     /// Returns the fractional part of this `Duration`, in nanoseconds.
     ///
@@ -261,7 +261,7 @@ impl Duration {
     /// ```
     #[stable(feature = "duration", since = "1.3.0")]
     #[inline]
-    pub fn subsec_nanos(&self) -> u32 { self.nanos }
+    pub const fn subsec_nanos(&self) -> u32 { self.nanos }
 
     /// Checked `Duration` addition. Computes `self + other`, returning [`None`]
     /// if overflow occurred.
