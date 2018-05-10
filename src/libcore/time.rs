@@ -203,6 +203,7 @@ impl Duration {
     ///
     /// [`subsec_nanos`]: #method.subsec_nanos
     #[stable(feature = "duration", since = "1.3.0")]
+    #[rustc_const_unstable(feature="duration_getters")]
     #[inline]
     pub const fn as_secs(&self) -> u64 { self.secs }
 
@@ -222,6 +223,7 @@ impl Duration {
     /// assert_eq!(duration.subsec_millis(), 432);
     /// ```
     #[stable(feature = "duration_extras", since = "1.27.0")]
+    #[rustc_const_unstable(feature="duration_getters")]
     #[inline]
     pub const fn subsec_millis(&self) -> u32 { self.nanos / NANOS_PER_MILLI }
 
@@ -241,6 +243,7 @@ impl Duration {
     /// assert_eq!(duration.subsec_micros(), 234_567);
     /// ```
     #[stable(feature = "duration_extras", since = "1.27.0")]
+    #[rustc_const_unstable(feature="duration_getters")]
     #[inline]
     pub const fn subsec_micros(&self) -> u32 { self.nanos / NANOS_PER_MICRO }
 
@@ -260,6 +263,7 @@ impl Duration {
     /// assert_eq!(duration.subsec_nanos(), 10_000_000);
     /// ```
     #[stable(feature = "duration", since = "1.3.0")]
+    #[rustc_const_unstable(feature="duration_getters")]
     #[inline]
     pub const fn subsec_nanos(&self) -> u32 { self.nanos }
 
