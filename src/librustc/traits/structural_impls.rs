@@ -177,6 +177,7 @@ impl<'a, 'tcx> Lift<'tcx> for traits::SelectionError<'a> {
             super::ConstEvalFailure(ref err) => {
                 tcx.lift(err).map(super::ConstEvalFailure)
             }
+            super::Overflow => bug!() // FIXME: ape ConstEvalFailure?
         }
     }
 }
@@ -491,6 +492,7 @@ impl<'tcx> fmt::Display for traits::Goal<'tcx> {
                 // FIXME: appropriate binder names
                 write!(fmt, "{}<> {{ {} }}", qkind, goal.skip_binder())
             }
+            CannotProve => write!(fmt, "CannotProve"),
         }
     }
 }
@@ -557,6 +559,7 @@ EnumTypeFoldableImpl! {
         (traits::Goal::Not)(goal),
         (traits::Goal::DomainGoal)(domain_goal),
         (traits::Goal::Quantified)(qkind, goal),
+        (traits::Goal::CannotProve),
     }
 }
 

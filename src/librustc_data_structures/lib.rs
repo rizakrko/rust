@@ -45,6 +45,10 @@ extern crate parking_lot;
 extern crate cfg_if;
 extern crate stable_deref_trait;
 
+// See librustc_cratesio_shim/Cargo.toml for a comment explaining this.
+#[allow(unused_extern_crates)]
+extern crate rustc_cratesio_shim;
+
 pub use rustc_serialize::hex::ToHex;
 
 pub mod array_vec;
@@ -56,6 +60,7 @@ pub mod bitvec;
 pub mod graph;
 pub mod indexed_set;
 pub mod indexed_vec;
+pub mod lazy_btree_map;
 pub mod obligation_forest;
 pub mod sip128;
 pub mod snapshot_map;

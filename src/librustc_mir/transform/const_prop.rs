@@ -20,7 +20,7 @@ use rustc::mir::visit::{Visitor, PlaceContext};
 use rustc::middle::const_val::ConstVal;
 use rustc::ty::{TyCtxt, self, Instance};
 use rustc::mir::interpret::{Value, PrimVal, GlobalId};
-use interpret::{eval_body_with_mir, mk_borrowck_eval_cx, ValTy};
+use interpret::{eval_promoted, mk_borrowck_eval_cx, ValTy};
 use transform::{MirPass, MirSource};
 use syntax::codemap::Span;
 use rustc::ty::subst::Substs;
@@ -72,7 +72,8 @@ struct ConstPropagator<'b, 'a, 'tcx:'a+'b> {
     param_env: ParamEnv<'tcx>,
 }
 
-impl<'a, 'b, 'tcx> LayoutOf<ty::Ty<'tcx>> for &'a ConstPropagator<'a, 'b, 'tcx> {
+impl<'a, 'b, 'tcx> LayoutOf for &'a ConstPropagator<'a, 'b, 'tcx> {
+    type Ty = ty::Ty<'tcx>;
     type TyLayout = Result<TyLayout<'tcx>, LayoutError<'tcx>>;
 
     fn layout_of(self, ty: ty::Ty<'tcx>) -> Self::TyLayout {
@@ -161,7 +162,7 @@ impl<'b, 'a, 'tcx:'b> ConstPropagator<'b, 'a, 'tcx> {
                 };
                 // cannot use `const_eval` here, because that would require having the MIR
                 // for the current function available, but we're producing said MIR right now
-                let (value, _, ty) = eval_body_with_mir(self.tcx, cid, self.mir, self.param_env)?;
+                let (value, _, ty) = eval_promoted(self.tcx, cid, self.mir, self.param_env)?;
                 let val = (value, ty, c.span);
                 trace!("evaluated {:?} to {:?}", c, val);
                 Some(val)
@@ -327,7 +328,7 @@ impl<'b, 'a, 'tcx:'b> ConstPropagator<'b, 'a, 'tcx> {
                         } else {
                             if overflow {
                                 use rustc::mir::interpret::EvalErrorKind;
-                                let mut err = EvalErrorKind::OverflowingMath.into();
+                                let mut err = EvalErrorKind::Overflow(op).into();
                                 ecx.report(&mut err, false, Some(span));
                                 return None;
                             }
@@ -477,12 +478,12 @@ impl<'b, 'a, 'tcx> Visitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
                         .hir
                         .as_local_node_id(self.source.def_id)
                         .expect("some part of a failing const eval must be local");
-                    use rustc::mir::AssertMessage::*;
+                    use rustc::mir::interpret::EvalErrorKind::*;
                     let msg = match msg {
-                        // Need proper const propagator for these
-                        GeneratorResumedAfterReturn |
-                        GeneratorResumedAfterPanic => return,
-                        Math(ref err) => err.description().to_owned(),
+                        Overflow(_) |
+                        OverflowNeg |
+                        DivisionByZero |
+                        RemainderByZero => msg.description().to_owned(),
                         BoundsCheck { ref len, ref index } => {
                             let len = self.eval_operand(len).expect("len must be const");
                             let len = match len.0 {
@@ -503,6 +504,8 @@ impl<'b, 'a, 'tcx> Visitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
                                 index,
                             )
                         },
+                        // Need proper const propagator for these
+                        _ => return,
                     };
                     self.tcx.lint_node(
                         ::rustc::lint::builtin::CONST_ERR,

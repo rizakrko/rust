@@ -25,16 +25,15 @@
 #![allow(unused_attributes)]
 #![feature(libc)]
 #![feature(quote)]
+#![feature(range_contains)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(slice_sort_by_cached_key)]
 #![feature(optin_builtin_traits)]
-#![feature(inclusive_range_fields)]
+#![feature(inclusive_range_methods)]
 
 use rustc::dep_graph::WorkProduct;
 use syntax_pos::symbol::Symbol;
 
-#[macro_use]
-extern crate bitflags;
 extern crate flate2;
 extern crate libc;
 #[macro_use] extern crate rustc;
@@ -43,8 +42,7 @@ extern crate num_cpus;
 extern crate rustc_mir;
 extern crate rustc_allocator;
 extern crate rustc_apfloat;
-extern crate rustc_back;
-extern crate rustc_const_math;
+extern crate rustc_target;
 #[macro_use] extern crate rustc_data_structures;
 extern crate rustc_demangle;
 extern crate rustc_incremental;
@@ -104,24 +102,6 @@ mod asm;
 mod attributes;
 mod base;
 mod builder;
-mod cabi_aarch64;
-mod cabi_arm;
-mod cabi_asmjs;
-mod cabi_hexagon;
-mod cabi_mips;
-mod cabi_mips64;
-mod cabi_msp430;
-mod cabi_nvptx;
-mod cabi_nvptx64;
-mod cabi_powerpc;
-mod cabi_powerpc64;
-mod cabi_s390x;
-mod cabi_sparc;
-mod cabi_sparc64;
-mod cabi_x86;
-mod cabi_x86_64;
-mod cabi_x86_win64;
-mod cabi_wasm32;
 mod callee;
 mod common;
 mod consts;

@@ -32,13 +32,14 @@ use dist;
 use native;
 use tool::{self, Tool};
 use util::{self, dylib_path, dylib_path_var};
-use Mode;
+use {Mode, DocTests};
 use toolstate::ToolState;
+use flags::Subcommand;
 
 const ADB_TEST_DIR: &str = "/data/tmp/work";
 
 /// The two modes of the test runner; tests or benchmarks.
-#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Copy, Clone, PartialOrd, Ord)]
 pub enum TestKind {
     /// Run `cargo test`
     Test,
@@ -241,7 +242,16 @@ impl Step for Rls {
         let host = self.host;
         let compiler = builder.compiler(stage, host);
 
-        builder.ensure(tool::Rls { compiler, target: self.host, extra_features: Vec::new() });
+        let build_result = builder.ensure(tool::Rls {
+            compiler,
+            target: self.host,
+            extra_features: Vec::new(),
+        });
+        if build_result.is_none() {
+            eprintln!("failed to test rls: could not build");
+            return;
+        }
+
         let mut cargo = tool::prepare_tool_cargo(builder,
                                                  compiler,
                                                  host,
@@ -286,7 +296,16 @@ impl Step for Rustfmt {
         let host = self.host;
         let compiler = builder.compiler(stage, host);
 
-        builder.ensure(tool::Rustfmt { compiler, target: self.host, extra_features: Vec::new() });
+        let build_result = builder.ensure(tool::Rustfmt {
+            compiler,
+            target: self.host,
+            extra_features: Vec::new(),
+        });
+        if build_result.is_none() {
+            eprintln!("failed to test rustfmt: could not build");
+            return;
+        }
+
         let mut cargo = tool::prepare_tool_cargo(builder,
                                                  compiler,
                                                  host,
@@ -295,6 +314,9 @@ impl Step for Rustfmt {
 
         // Don't build tests dynamically, just a pain to work with
         cargo.env("RUSTC_NO_PREFER_DYNAMIC", "1");
+        let dir = testdir(builder, compiler.host);
+        t!(fs::create_dir_all(&dir));
+        cargo.env("RUSTFMT_TEST_DIR", dir);
 
         builder.add_rustc_lib_path(compiler, &mut cargo);
 
@@ -538,6 +560,7 @@ impl Step for RustdocUi {
             target: self.target,
             mode: "ui",
             suite: "rustdoc-ui",
+            path: None,
             compare_mode: None,
         })
     }
@@ -642,7 +665,7 @@ macro_rules! test_definitions {
             const ONLY_HOSTS: bool = $host;
 
             fn should_run(run: ShouldRun) -> ShouldRun {
-                run.path($path)
+                run.suite_path($path)
             }
 
             fn make_run(run: RunConfig) {
@@ -660,6 +683,7 @@ macro_rules! test_definitions {
                     target: self.target,
                     mode: $mode,
                     suite: $suite,
+                    path: Some($path),
                     compare_mode: $compare_mode,
                 })
             }
@@ -814,7 +838,7 @@ test!(RunFailFullDepsPretty {
     host: true
 });
 
-default_test!(RunMake {
+host_test!(RunMake {
     path: "src/test/run-make",
     mode: "run-make",
     suite: "run-make"
@@ -832,6 +856,7 @@ struct Compiletest {
     target: Interned<String>,
     mode: &'static str,
     suite: &'static str,
+    path: Option<&'static str>,
     compare_mode: Option<&'static str>,
 }
 
@@ -853,6 +878,9 @@ impl Step for Compiletest {
         let mode = self.mode;
         let suite = self.suite;
         let compare_mode = self.compare_mode;
+
+        // Path for test suite
+        let suite_path = self.path.unwrap_or("");
 
         // Skip codegen tests if they aren't enabled in configuration.
         if !builder.config.codegen_tests && suite == "codegen" {
@@ -976,7 +1004,19 @@ impl Step for Compiletest {
             cmd.arg("--lldb-python-dir").arg(dir);
         }
 
-        cmd.args(&builder.config.cmd.test_args());
+        // Get paths from cmd args
+        let paths = match &builder.config.cmd {
+            Subcommand::Test { ref paths, ..} => &paths[..],
+            _ => &[]
+        };
+
+        // Get test-args by striping suite path
+        let mut test_args: Vec<&str> = paths.iter().filter(|p| p.starts_with(suite_path) &&
+           p.is_file()).map(|p| p.strip_prefix(suite_path).unwrap().to_str().unwrap()).collect();
+
+        test_args.append(&mut builder.config.cmd.test_args());
+
+        cmd.args(&test_args);
 
         if builder.is_verbose() {
             cmd.arg("--verbose");
@@ -1001,7 +1041,7 @@ impl Step for Compiletest {
 
             // Only pass correct values for these flags for the `run-make` suite as it
             // requires that a C++ compiler was configured which isn't always the case.
-            if !builder.config.dry_run && suite == "run-make-fulldeps" {
+            if !builder.config.dry_run && mode == "run-make" {
                 let llvm_components = output(Command::new(&llvm_config).arg("--components"));
                 let llvm_cxxflags = output(Command::new(&llvm_config).arg("--cxxflags"));
                 cmd.arg("--cc").arg(builder.cc(target))
@@ -1014,13 +1054,13 @@ impl Step for Compiletest {
                 }
             }
         }
-        if suite == "run-make-fulldeps" && !builder.config.llvm_enabled {
+        if mode == "run-make" && !builder.config.llvm_enabled {
             builder.info(
                 &format!("Ignoring run-make test suite as they generally don't work without LLVM"));
             return;
         }
 
-        if suite != "run-make-fulldeps" {
+        if mode != "run-make" {
             cmd.arg("--cc").arg("")
                .arg("--cxx").arg("")
                .arg("--cflags").arg("")
@@ -1194,6 +1234,7 @@ test_book!(
     Nomicon, "src/doc/nomicon", "nomicon", default=false;
     Reference, "src/doc/reference", "reference", default=false;
     RustdocBook, "src/doc/rustdoc", "rustdoc", default=true;
+    RustcBook, "src/doc/rustc", "rustc", default=true;
     RustByExample, "src/doc/rust-by-example", "rust-by-example", default=false;
     TheBook, "src/doc/book", "book", default=false;
     UnstableBook, "src/doc/unstable-book", "unstable-book", default=true;
@@ -1388,13 +1429,13 @@ impl Step for CrateNotDefault {
 }
 
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Crate {
-    compiler: Compiler,
-    target: Interned<String>,
-    mode: Mode,
-    test_kind: TestKind,
-    krate: Interned<String>,
+    pub compiler: Compiler,
+    pub target: Interned<String>,
+    pub mode: Mode,
+    pub test_kind: TestKind,
+    pub krate: Interned<String>,
 }
 
 impl Step for Crate {
@@ -1500,8 +1541,14 @@ impl Step for Crate {
         if test_kind.subcommand() == "test" && !builder.fail_fast {
             cargo.arg("--no-fail-fast");
         }
-        if builder.doc_tests {
-            cargo.arg("--doc");
+        match builder.doc_tests {
+            DocTests::Only => {
+                cargo.arg("--doc");
+            }
+            DocTests::No => {
+                cargo.args(&["--lib", "--bins", "--examples", "--tests", "--benches"]);
+            }
+            DocTests::Yes => {}
         }
 
         cargo.arg("-p").arg(krate);

@@ -273,7 +273,6 @@
 #![feature(libc)]
 #![feature(link_args)]
 #![feature(linkage)]
-#![feature(macro_reexport)]
 #![feature(macro_vis_matcher)]
 #![feature(needs_panic_runtime)]
 #![feature(never_type)]
@@ -313,6 +312,7 @@
 #![feature(unboxed_closures)]
 #![feature(untagged_unions)]
 #![feature(unwind_attributes)]
+#![feature(use_extern_macros)]
 #![feature(vec_push_all)]
 #![feature(doc_cfg)]
 #![feature(doc_masked)]
@@ -330,10 +330,10 @@
 // with a rustc without jemalloc.
 // FIXME(#44236) shouldn't need MSVC logic
 #![cfg_attr(all(not(target_env = "msvc"),
-                any(stage0, feature = "force_alloc_system")),
+                any(all(stage0, not(test)), feature = "force_alloc_system")),
             feature(global_allocator))]
 #[cfg(all(not(target_env = "msvc"),
-          any(stage0, feature = "force_alloc_system")))]
+          any(all(stage0, not(test)), feature = "force_alloc_system")))]
 #[global_allocator]
 static ALLOC: alloc_system::System = alloc_system::System;
 
@@ -347,15 +347,14 @@ use prelude::v1::*;
 #[cfg(test)] extern crate test;
 #[cfg(test)] extern crate rand;
 
-// We want to re-export a few macros from core but libcore has already been
-// imported by the compiler (via our #[no_std] attribute) In this case we just
-// add a new crate name so we can attach the re-exports to it.
-#[macro_reexport(assert_eq, assert_ne, debug_assert, debug_assert_eq,
-                 debug_assert_ne, unreachable, unimplemented, write, writeln, try)]
-extern crate core as __core;
+// Re-export a few macros from core
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core::{assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne};
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use core::{unreachable, unimplemented, write, writeln, try};
 
+#[allow(unused_imports)] // macros from `alloc` are not used on all platforms
 #[macro_use]
-#[macro_reexport(vec, format)]
 extern crate alloc as alloc_crate;
 extern crate alloc_system;
 #[doc(masked)]
@@ -450,6 +449,8 @@ pub use alloc_crate::borrow;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::fmt;
 #[stable(feature = "rust1", since = "1.0.0")]
+pub use alloc_crate::format;
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::slice;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::str;
@@ -461,6 +462,8 @@ pub use alloc_crate::vec;
 pub use core::char;
 #[stable(feature = "i128", since = "1.26.0")]
 pub use core::u128;
+#[stable(feature = "core_hint", since = "1.27.0")]
+pub use core::hint;
 
 pub mod f32;
 pub mod f64;
@@ -482,7 +485,6 @@ pub mod path;
 pub mod process;
 pub mod sync;
 pub mod time;
-pub mod alloc;
 
 #[unstable(feature = "allocator_api", issue = "32838")]
 #[rustc_deprecated(since = "1.27.0", reason = "module renamed to `alloc`")]
@@ -495,6 +497,8 @@ pub mod heap {
 #[macro_use]
 mod sys_common;
 mod sys;
+
+pub mod alloc;
 
 // Private support modules
 mod panicking;

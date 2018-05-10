@@ -22,8 +22,8 @@ use session::{early_error, early_warn, Session};
 use session::search_paths::SearchPaths;
 
 use ich::StableHashingContext;
-use rustc_back::{LinkerFlavor, PanicStrategy, RelroLevel};
-use rustc_back::target::{Target, TargetTriple};
+use rustc_target::spec::{LinkerFlavor, PanicStrategy, RelroLevel};
+use rustc_target::spec::{Target, TargetTriple};
 use rustc_data_structures::stable_hasher::ToStableHashKey;
 use lint;
 use middle::cstore;
@@ -770,7 +770,7 @@ macro_rules! options {
         pub const parse_sanitizer: Option<&'static str> =
             Some("one of: `address`, `leak`, `memory` or `thread`");
         pub const parse_linker_flavor: Option<&'static str> =
-            Some(::rustc_back::LinkerFlavor::one_of());
+            Some(::rustc_target::spec::LinkerFlavor::one_of());
         pub const parse_optimization_fuel: Option<&'static str> =
             Some("crate=integer");
         pub const parse_unpretty: Option<&'static str> =
@@ -782,7 +782,7 @@ macro_rules! options {
     #[allow(dead_code)]
     mod $mod_set {
         use super::{$struct_name, Passes, SomePasses, AllPasses, Sanitizer, Lto};
-        use rustc_back::{LinkerFlavor, PanicStrategy, RelroLevel};
+        use rustc_target::spec::{LinkerFlavor, PanicStrategy, RelroLevel};
         use std::path::PathBuf;
 
         $(
@@ -1053,6 +1053,8 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
          2 = full debug info with variable and type information"),
     opt_level: Option<String> = (None, parse_opt_string, [TRACKED],
         "optimize with possible levels 0-3, s, or z"),
+    force_frame_pointers: Option<bool> = (None, parse_opt_bool, [TRACKED],
+        "force use of the frame pointers"),
     debug_assertions: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "explicitly enable the cfg(debug_assertions) directive"),
     inline_threshold: Option<usize> = (None, parse_opt_uint, [TRACKED],
@@ -1248,6 +1250,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "choose which RELRO level to use"),
     nll_subminimal_causes: bool = (false, parse_bool, [UNTRACKED],
         "when tracking region error causes, accept subminimal results for faster execution."),
+    nll_facts: bool = (false, parse_bool, [UNTRACKED],
+                       "dump facts from NLL analysis into side files"),
     disable_nll_user_type_assert: bool = (false, parse_bool, [UNTRACKED],
         "disable user provided type assertion in NLL"),
     trans_time_graph: bool = (false, parse_bool, [UNTRACKED],
@@ -1270,7 +1274,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     dep_info_omit_d_target: bool = (false, parse_bool, [TRACKED],
         "in dep-info output, omit targets for tracking dependencies of the dep-info files \
          themselves"),
-    approximate_suggestions: bool = (false, parse_bool, [UNTRACKED],
+    suggestion_applicability: bool = (false, parse_bool, [UNTRACKED],
         "include machine-applicability of suggestions in JSON output"),
     unpretty: Option<String> = (None, parse_unpretty, [UNTRACKED],
         "Present the input source, unstable (and less-pretty) variants;
@@ -1289,6 +1293,10 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "tell the linker to strip debuginfo when building without debuginfo enabled."),
     share_generics: Option<bool> = (None, parse_opt_bool, [TRACKED],
           "make the current crate share its generic instantiations"),
+    chalk: bool = (false, parse_bool, [TRACKED],
+          "enable the experimental Chalk-based trait solving engine"),
+    cross_lang_lto: bool = (false, parse_bool, [TRACKED],
+          "generate build artifacts that are compatible with linker-based LTO."),
 }
 
 pub fn default_lib_output() -> CrateType {
@@ -1679,7 +1687,7 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> ast::CrateConfig {
                 early_error(ErrorOutputType::default(), &msg)
             }
 
-            (meta_item.ident.name, meta_item.value_str())
+            (meta_item.name(), meta_item.value_str())
         })
         .collect::<ast::CrateConfig>()
 }
@@ -2321,8 +2329,7 @@ mod dep_tracking {
     use super::{CrateType, DebugInfoLevel, ErrorOutputType, Lto, OptLevel, OutputTypes,
                 Passes, Sanitizer};
     use syntax::feature_gate::UnstableFeatures;
-    use rustc_back::{PanicStrategy, RelroLevel};
-    use rustc_back::target::TargetTriple;
+    use rustc_target::spec::{PanicStrategy, RelroLevel, TargetTriple};
     use syntax::edition::Edition;
 
     pub trait DepTrackingHash {
@@ -2454,7 +2461,7 @@ mod tests {
     use std::iter::FromIterator;
     use std::path::PathBuf;
     use super::{Externs, OutputType, OutputTypes};
-    use rustc_back::{PanicStrategy, RelroLevel};
+    use rustc_target::spec::{PanicStrategy, RelroLevel};
     use syntax::symbol::Symbol;
     use syntax::edition::{Edition, DEFAULT_EDITION};
     use syntax;
@@ -2962,6 +2969,10 @@ mod tests {
 
         opts = reference.clone();
         opts.cg.debuginfo = Some(0xba5eba11);
+        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
+
+        opts = reference.clone();
+        opts.cg.force_frame_pointers = Some(false);
         assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
 
         opts = reference.clone();

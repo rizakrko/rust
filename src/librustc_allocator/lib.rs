@@ -12,6 +12,7 @@
 
 extern crate rustc;
 extern crate rustc_errors;
+extern crate rustc_target;
 extern crate syntax;
 extern crate syntax_pos;
 
@@ -22,11 +23,6 @@ pub static ALLOCATOR_METHODS: &[AllocatorMethod] = &[
         name: "alloc",
         inputs: &[AllocatorTy::Layout],
         output: AllocatorTy::ResultPtr,
-    },
-    AllocatorMethod {
-        name: "oom",
-        inputs: &[],
-        output: AllocatorTy::Bang,
     },
     AllocatorMethod {
         name: "dealloc",
@@ -52,7 +48,6 @@ pub struct AllocatorMethod {
 }
 
 pub enum AllocatorTy {
-    Bang,
     Layout,
     Ptr,
     ResultPtr,

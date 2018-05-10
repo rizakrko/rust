@@ -20,7 +20,7 @@ use lint::builtin::BuiltinLintDiagnostics;
 use middle::allocator::AllocatorKind;
 use middle::dependency_format;
 use session::search_paths::PathKind;
-use session::config::{DebugInfoLevel, OutputType};
+use session::config::{OutputType};
 use ty::tls;
 use util::nodemap::{FxHashSet};
 use util::common::{duration_to_secs_str, ErrorReported};
@@ -41,8 +41,8 @@ use syntax::{ast, codemap};
 use syntax::feature_gate::AttributeType;
 use syntax_pos::{MultiSpan, Span};
 
-use rustc_back::{LinkerFlavor, PanicStrategy};
-use rustc_back::target::{Target, TargetTriple};
+use rustc_target::spec::{LinkerFlavor, PanicStrategy};
+use rustc_target::spec::{Target, TargetTriple};
 use rustc_data_structures::flock;
 use jobserver::Client;
 
@@ -156,7 +156,7 @@ pub struct Session {
 
     /// Loaded up early on in the initialization of this `Session` to avoid
     /// false positives about a job server in our environment.
-    pub jobserver_from_env: Option<Client>,
+    pub jobserver: Client,
 
     /// Metadata about the allocators for the current crate being compiled
     pub has_global_allocator: Once<bool>,
@@ -658,8 +658,11 @@ impl Session {
     }
 
     pub fn must_not_eliminate_frame_pointers(&self) -> bool {
-        self.opts.debuginfo != DebugInfoLevel::NoDebugInfo
-            || !self.target.target.options.eliminate_frame_pointer
+        if let Some(x) = self.opts.cg.force_frame_pointers {
+            x
+        } else {
+            !self.target.target.options.eliminate_frame_pointer
+        }
     }
 
     /// Returns the symbol name for the registrar function,
@@ -1002,7 +1005,7 @@ pub fn build_session_with_codemap(
                     Some(registry),
                     codemap.clone(),
                     pretty,
-                    sopts.debugging_opts.approximate_suggestions,
+                    sopts.debugging_opts.suggestion_applicability,
                 ).ui_testing(sopts.debugging_opts.ui_testing),
             ),
             (config::ErrorOutputType::Json(pretty), Some(dst)) => Box::new(
@@ -1011,7 +1014,7 @@ pub fn build_session_with_codemap(
                     Some(registry),
                     codemap.clone(),
                     pretty,
-                    sopts.debugging_opts.approximate_suggestions,
+                    sopts.debugging_opts.suggestion_applicability,
                 ).ui_testing(sopts.debugging_opts.ui_testing),
             ),
             (config::ErrorOutputType::Short(color_config), None) => Box::new(
@@ -1128,14 +1131,23 @@ pub fn build_session_(
         // positives, or in other words we try to execute this before we open
         // any file descriptors ourselves.
         //
+        // Pick a "reasonable maximum" if we don't otherwise have
+        // a jobserver in our environment, capping out at 32 so we
+        // don't take everything down by hogging the process run queue.
+        // The fixed number is used to have deterministic compilation
+        // across machines.
+        //
         // Also note that we stick this in a global because there could be
         // multiple `Session` instances in this process, and the jobserver is
         // per-process.
-        jobserver_from_env: unsafe {
-            static mut GLOBAL_JOBSERVER: *mut Option<Client> = 0 as *mut _;
+        jobserver: unsafe {
+            static mut GLOBAL_JOBSERVER: *mut Client = 0 as *mut _;
             static INIT: std::sync::Once = std::sync::ONCE_INIT;
             INIT.call_once(|| {
-                GLOBAL_JOBSERVER = Box::into_raw(Box::new(Client::from_env()));
+                let client = Client::from_env().unwrap_or_else(|| {
+                    Client::new(32).expect("failed to create jobserver")
+                });
+                GLOBAL_JOBSERVER = Box::into_raw(Box::new(client));
             });
             (*GLOBAL_JOBSERVER).clone()
         },

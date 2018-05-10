@@ -46,7 +46,7 @@ use syntax::attr;
 use syntax::feature_gate::{AttributeGate, AttributeType, Stability, deprecated_attributes};
 use syntax_pos::{BytePos, Span, SyntaxContext};
 use syntax::symbol::keywords;
-use syntax::errors::DiagnosticBuilder;
+use syntax::errors::{Applicability, DiagnosticBuilder};
 
 use rustc::hir::{self, PatKind};
 use rustc::hir::intravisit::FnKind;
@@ -675,9 +675,8 @@ impl LintPass for DeprecatedAttr {
 
 impl EarlyLintPass for DeprecatedAttr {
     fn check_attribute(&mut self, cx: &EarlyContext, attr: &ast::Attribute) {
-        let name = unwrap_or!(attr.name(), return);
         for &&(n, _, ref g) in &self.depr_attrs {
-            if name == n {
+            if attr.name() == n {
                 if let &AttributeGate::Gated(Stability::Deprecated(link),
                                              ref name,
                                              ref reason,
@@ -960,7 +959,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnconditionalRecursion {
                 // Attempt to select a concrete impl before checking.
                 ty::TraitContainer(trait_def_id) => {
                     let trait_ref = ty::TraitRef::from_method(tcx, trait_def_id, callee_substs);
-                    let trait_ref = ty::Binder(trait_ref);
+                    let trait_ref = ty::Binder::bind(trait_ref);
                     let span = tcx.hir.span(expr_id);
                     let obligation =
                         traits::Obligation::new(traits::ObligationCause::misc(span, expr_id),
@@ -1169,7 +1168,7 @@ impl LintPass for MutableTransmutes {
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MutableTransmutes {
     fn check_expr(&mut self, cx: &LateContext, expr: &hir::Expr) {
-        use syntax::abi::Abi::RustIntrinsic;
+        use rustc_target::spec::abi::Abi::RustIntrinsic;
 
         let msg = "mutating transmuted &mut T from &T may cause undefined behavior, \
                    consider instead using an UnsafeCell";
@@ -1301,7 +1300,19 @@ impl UnreachablePub {
             } else {
                 "pub(crate)"
             }.to_owned();
-            err.span_suggestion(pub_span, "consider restricting its visibility", replacement);
+            let app = if span.ctxt().outer().expn_info().is_none() {
+                // even if macros aren't involved the suggestion
+                // may be incorrect -- the user may have mistakenly
+                // hidden it behind a private module and this lint is
+                // a helpful way to catch that. However, we're trying
+                // not to change the nature of the code with this lint
+                // so it's marked as machine applicable.
+                Applicability::MachineApplicable
+            } else {
+                Applicability::MaybeIncorrect
+            };
+            err.span_suggestion_with_applicability(pub_span, "consider restricting its visibility",
+                                                   replacement, app);
             if exportable {
                 err.help("or consider exporting it for use by other crates");
             }
@@ -1439,5 +1450,136 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeAliasBounds {
                 err.emit();
             }
         }
+    }
+}
+
+/// Lint constants that are erroneous.
+/// Without this lint, we might not get any diagnostic if the constant is
+/// unused within this crate, even though downstream crates can't use it
+/// without producing an error.
+pub struct UnusedBrokenConst;
+
+impl LintPass for UnusedBrokenConst {
+    fn get_lints(&self) -> LintArray {
+        lint_array!()
+    }
+}
+
+fn check_const(cx: &LateContext, body_id: hir::BodyId, what: &str) {
+    let def_id = cx.tcx.hir.body_owner_def_id(body_id);
+    let param_env = cx.tcx.param_env(def_id);
+    let cid = ::rustc::mir::interpret::GlobalId {
+        instance: ty::Instance::mono(cx.tcx, def_id),
+        promoted: None
+    };
+    if let Err(err) = cx.tcx.const_eval(param_env.and(cid)) {
+        let span = cx.tcx.def_span(def_id);
+        let mut diag = cx.struct_span_lint(
+            CONST_ERR,
+            span,
+            &format!("this {} cannot be used", what),
+        );
+        use rustc::middle::const_val::ConstEvalErrDescription;
+        match err.description() {
+            ConstEvalErrDescription::Simple(message) => {
+                diag.span_label(span, message);
+            }
+            ConstEvalErrDescription::Backtrace(miri, frames) => {
+                diag.span_label(span, format!("{}", miri));
+                for frame in frames {
+                    diag.span_label(frame.span, format!("inside call to `{}`", frame.location));
+                }
+            }
+        }
+        diag.emit()
+    }
+}
+
+struct UnusedBrokenConstVisitor<'a, 'tcx: 'a>(&'a LateContext<'a, 'tcx>);
+
+impl<'a, 'tcx, 'v> hir::intravisit::Visitor<'v> for UnusedBrokenConstVisitor<'a, 'tcx> {
+    fn visit_nested_body(&mut self, id: hir::BodyId) {
+        check_const(self.0, id, "array length");
+    }
+    fn nested_visit_map<'this>(&'this mut self) -> hir::intravisit::NestedVisitorMap<'this, 'v> {
+        hir::intravisit::NestedVisitorMap::None
+    }
+}
+
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedBrokenConst {
+    fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
+        match it.node {
+            hir::ItemConst(_, body_id) => {
+                check_const(cx, body_id, "constant");
+            },
+            hir::ItemTy(ref ty, _) => hir::intravisit::walk_ty(
+                &mut UnusedBrokenConstVisitor(cx),
+                ty
+            ),
+            _ => {},
+        }
+    }
+}
+
+declare_lint! {
+    pub UNNECESSARY_EXTERN_CRATE,
+    Allow,
+    "suggest removing `extern crate` for the 2018 edition"
+}
+
+pub struct ExternCrate(/* depth */ u32);
+
+impl ExternCrate {
+    pub fn new() -> Self {
+        ExternCrate(0)
+    }
+}
+
+impl LintPass for ExternCrate {
+    fn get_lints(&self) -> LintArray {
+        lint_array!(UNNECESSARY_EXTERN_CRATE)
+    }
+}
+
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExternCrate {
+    fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
+        if let hir::ItemExternCrate(ref orig) =  it.node {
+            if it.attrs.iter().any(|a| a.check_name("macro_use")) {
+                return
+            }
+            let mut err = cx.struct_span_lint(UNNECESSARY_EXTERN_CRATE,
+                it.span, "`extern crate` is unnecessary in the new edition");
+            if it.vis == hir::Visibility::Public || self.0 > 1 || orig.is_some() {
+                let pub_ = if it.vis == hir::Visibility::Public {
+                    "pub "
+                } else {
+                    ""
+                };
+
+                let help = format!("use `{}use`", pub_);
+
+                if let Some(orig) = orig {
+                    err.span_suggestion(it.span, &help,
+                        format!("{}use {} as {}", pub_, orig, it.name));
+                } else {
+                    err.span_suggestion(it.span, &help,
+                        format!("{}use {}", pub_, it.name));
+                }
+            } else {
+                err.span_suggestion(it.span, "remove it", "".into());
+            }
+
+            err.emit();
+        }
+    }
+
+    fn check_mod(&mut self, _: &LateContext, _: &hir::Mod,
+                 _: Span, _: ast::NodeId) {
+        self.0 += 1;
+    }
+
+    fn check_mod_post(&mut self, _: &LateContext, _: &hir::Mod,
+                      _: Span, _: ast::NodeId) {
+        self.0 += 1;
     }
 }

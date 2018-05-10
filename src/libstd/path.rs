@@ -87,7 +87,6 @@ use io;
 use iter::{self, FusedIterator};
 use ops::{self, Deref};
 use rc::Rc;
-use str::FromStr;
 use sync::Arc;
 
 use ffi::{OsStr, OsString};
@@ -298,10 +297,9 @@ pub const MAIN_SEPARATOR: char = ::sys::path::MAIN_SEP;
 // Iterate through `iter` while it matches `prefix`; return `None` if `prefix`
 // is not a prefix of `iter`, otherwise return `Some(iter_after_prefix)` giving
 // `iter` after having exhausted `prefix`.
-fn iter_after<A, I, J>(mut iter: I, mut prefix: J) -> Option<I>
-    where I: Iterator<Item = A> + Clone,
-          J: Iterator<Item = A>,
-          A: PartialEq
+fn iter_after<'a, 'b, I, J>(mut iter: I, mut prefix: J) -> Option<I>
+    where I: Iterator<Item = Component<'a>> + Clone,
+          J: Iterator<Item = Component<'b>>,
 {
     loop {
         let mut iter_next = iter.clone();
@@ -1442,32 +1440,6 @@ impl From<String> for PathBuf {
     }
 }
 
-/// Error returned from [`PathBuf::from_str`][`from_str`].
-///
-/// Note that parsing a path will never fail. This error is just a placeholder
-/// for implementing `FromStr` for `PathBuf`.
-///
-/// [`from_str`]: struct.PathBuf.html#method.from_str
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[stable(feature = "path_from_str", since = "1.26.0")]
-pub enum ParsePathError {}
-
-#[stable(feature = "path_from_str", since = "1.26.0")]
-impl fmt::Display for ParsePathError {
-    fn fmt(&self, _: &mut fmt::Formatter) -> fmt::Result {
-        match *self {}
-    }
-}
-
-#[stable(feature = "path_from_str", since = "1.26.0")]
-impl FromStr for PathBuf {
-    type Err = ParsePathError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(PathBuf::from(s))
-    }
-}
-
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<P: AsRef<Path>> iter::FromIterator<P> for PathBuf {
     fn from_iter<I: IntoIterator<Item = P>>(iter: I) -> PathBuf {
@@ -1967,7 +1939,7 @@ impl Path {
     /// # Examples
     ///
     /// ```
-    /// use std::path::Path;
+    /// use std::path::{Path, PathBuf};
     ///
     /// let path = Path::new("/test/haha/foo.txt");
     ///
@@ -1978,17 +1950,20 @@ impl Path {
     /// assert_eq!(path.strip_prefix("/test/haha/foo.txt/"), Ok(Path::new("")));
     /// assert_eq!(path.strip_prefix("test").is_ok(), false);
     /// assert_eq!(path.strip_prefix("/haha").is_ok(), false);
+    ///
+    /// let prefix = PathBuf::from("/test/");
+    /// assert_eq!(path.strip_prefix(prefix), Ok(Path::new("haha/foo.txt")));
     /// ```
     #[stable(since = "1.7.0", feature = "path_strip_prefix")]
-    pub fn strip_prefix<'a, P: ?Sized>(&'a self, base: &'a P)
-                                       -> Result<&'a Path, StripPrefixError>
+    pub fn strip_prefix<P>(&self, base: P)
+                           -> Result<&Path, StripPrefixError>
         where P: AsRef<Path>
     {
         self._strip_prefix(base.as_ref())
     }
 
-    fn _strip_prefix<'a>(&'a self, base: &'a Path)
-                         -> Result<&'a Path, StripPrefixError> {
+    fn _strip_prefix(&self, base: &Path)
+                     -> Result<&Path, StripPrefixError> {
         iter_after(self.components(), base.components())
             .map(|c| c.as_path())
             .ok_or(StripPrefixError(()))

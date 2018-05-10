@@ -14,7 +14,7 @@ use core::ops::Drop;
 use core::ptr::{self, NonNull, Unique};
 use core::slice;
 
-use alloc::{Alloc, Layout, Global};
+use alloc::{Alloc, Layout, Global, oom};
 use alloc::CollectionAllocErr;
 use alloc::CollectionAllocErr::*;
 use boxed::Box;
@@ -56,14 +56,16 @@ pub struct RawVec<T, A: Alloc = Global> {
 impl<T, A: Alloc> RawVec<T, A> {
     /// Like `new` but parameterized over the choice of allocator for
     /// the returned RawVec.
-    pub fn new_in(a: A) -> Self {
+    pub const fn new_in(a: A) -> Self {
         // !0 is usize::MAX. This branch should be stripped at compile time.
-        let cap = if mem::size_of::<T>() == 0 { !0 } else { 0 };
+        // FIXME(mark-i-m): use this line when `if`s are allowed in `const`
+        //let cap = if mem::size_of::<T>() == 0 { !0 } else { 0 };
 
         // Unique::empty() doubles as "unallocated" and "zero-sized allocation"
         RawVec {
             ptr: Unique::empty(),
-            cap,
+            // FIXME(mark-i-m): use `cap` when ifs are allowed in const
+            cap: [0, !0][(mem::size_of::<T>() == 0) as usize],
             a,
         }
     }
@@ -101,7 +103,7 @@ impl<T, A: Alloc> RawVec<T, A> {
                 };
                 match result {
                     Ok(ptr) => ptr,
-                    Err(_) => a.oom(),
+                    Err(_) => oom(),
                 }
             };
 
@@ -120,7 +122,7 @@ impl<T> RawVec<T, Global> {
     /// RawVec with capacity 0. If T has 0 size, then it makes a
     /// RawVec with capacity `usize::MAX`. Useful for implementing
     /// delayed allocation.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::new_in(Global)
     }
 
@@ -316,7 +318,7 @@ impl<T, A: Alloc> RawVec<T, A> {
                                                  new_size);
                     match ptr_res {
                         Ok(ptr) => (new_cap, ptr.cast().into()),
-                        Err(_) => self.a.oom(),
+                        Err(_) => oom(),
                     }
                 }
                 None => {
@@ -325,7 +327,7 @@ impl<T, A: Alloc> RawVec<T, A> {
                     let new_cap = if elem_size > (!0) / 8 { 1 } else { 4 };
                     match self.a.alloc_array::<T>(new_cap) {
                         Ok(ptr) => (new_cap, ptr.into()),
-                        Err(_) => self.a.oom(),
+                        Err(_) => oom(),
                     }
                 }
             };
@@ -442,7 +444,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     pub fn reserve_exact(&mut self, used_cap: usize, needed_extra_cap: usize) {
         match self.try_reserve_exact(used_cap, needed_extra_cap) {
             Err(CapacityOverflow) => capacity_overflow(),
-            Err(AllocErr) => self.a.oom(),
+            Err(AllocErr) => oom(),
             Ok(()) => { /* yay */ }
          }
      }
@@ -552,7 +554,7 @@ impl<T, A: Alloc> RawVec<T, A> {
     pub fn reserve(&mut self, used_cap: usize, needed_extra_cap: usize) {
         match self.try_reserve(used_cap, needed_extra_cap) {
             Err(CapacityOverflow) => capacity_overflow(),
-            Err(AllocErr) => self.a.oom(),
+            Err(AllocErr) => oom(),
             Ok(()) => { /* yay */ }
          }
      }
@@ -667,7 +669,7 @@ impl<T, A: Alloc> RawVec<T, A> {
                                      old_layout,
                                      new_size) {
                     Ok(p) => self.ptr = p.cast().into(),
-                    Err(_) => self.a.oom(),
+                    Err(_) => oom(),
                 }
             }
             self.cap = amount;
@@ -746,7 +748,7 @@ mod tests {
 
     #[test]
     fn allocator_param() {
-        use allocator::{Alloc, AllocErr};
+        use alloc::AllocErr;
 
         // Writing a test of integration between third-party
         // allocators and RawVec is a little tricky because the RawVec

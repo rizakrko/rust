@@ -10,7 +10,7 @@
 
 use rustc::middle::allocator::AllocatorKind;
 use rustc_errors;
-use syntax::abi::Abi;
+use rustc_target::spec::abi::Abi;
 use syntax::ast::{Attribute, Crate, LitKind, StrStyle};
 use syntax::ast::{Arg, Constness, Generics, Mac, Mutability, Ty, Unsafety};
 use syntax::ast::{self, Expr, Ident, Item, ItemKind, TyKind, VisibilityKind};
@@ -245,7 +245,7 @@ impl<'a> AllocFnFactory<'a> {
                 self.cx.expr_ident(self.span, ident)
             }
 
-            AllocatorTy::ResultPtr | AllocatorTy::Bang | AllocatorTy::Unit => {
+            AllocatorTy::ResultPtr | AllocatorTy::Unit => {
                 panic!("can't convert AllocatorTy to an argument")
             }
         }
@@ -261,8 +261,6 @@ impl<'a> AllocFnFactory<'a> {
                 let expr = self.cx.expr_cast(self.span, expr, self.ptr_u8());
                 (self.ptr_u8(), expr)
             }
-
-            AllocatorTy::Bang => (self.cx.ty(self.span, TyKind::Never), expr),
 
             AllocatorTy::Unit => (self.cx.ty(self.span, TyKind::Tup(Vec::new())), expr),
 

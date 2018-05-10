@@ -14,7 +14,7 @@
 //! compiler code, rather than using their own custom pass. Those
 //! lints are all available in `rustc_lint::builtin`.
 
-use errors::DiagnosticBuilder;
+use errors::{Applicability, DiagnosticBuilder};
 use lint::{LintPass, LateLintPass, LintArray};
 use session::Session;
 use syntax::codemap::Span;
@@ -208,7 +208,7 @@ declare_lint! {
 
 declare_lint! {
     pub INCOHERENT_FUNDAMENTAL_IMPLS,
-    Warn,
+    Deny,
     "potentially-conflicting impls were erroneously allowed"
 }
 
@@ -252,6 +252,13 @@ declare_lint! {
     pub BARE_TRAIT_OBJECT,
     Allow,
     "suggest using `dyn Trait` for trait objects"
+}
+
+declare_lint! {
+    pub ABSOLUTE_PATH_STARTING_WITH_MODULE,
+    Allow,
+    "fully qualified paths that start with a module name \
+     instead of `crate`, `self`, or an extern crate name"
 }
 
 declare_lint! {
@@ -314,6 +321,7 @@ impl LintPass for HardwiredLints {
             TYVAR_BEHIND_RAW_POINTER,
             ELIDED_LIFETIME_IN_PATH,
             BARE_TRAIT_OBJECT,
+            ABSOLUTE_PATH_STARTING_WITH_MODULE,
             UNSTABLE_NAME_COLLISION,
         )
     }
@@ -324,7 +332,8 @@ impl LintPass for HardwiredLints {
 #[derive(PartialEq, RustcEncodable, RustcDecodable, Debug)]
 pub enum BuiltinLintDiagnostics {
     Normal,
-    BareTraitObject(Span, /* is_global */ bool)
+    BareTraitObject(Span, /* is_global */ bool),
+    AbsPathWithModule(Span),
 }
 
 impl BuiltinLintDiagnostics {
@@ -332,12 +341,30 @@ impl BuiltinLintDiagnostics {
         match self {
             BuiltinLintDiagnostics::Normal => (),
             BuiltinLintDiagnostics::BareTraitObject(span, is_global) => {
-                let sugg = match sess.codemap().span_to_snippet(span) {
-                    Ok(ref s) if is_global => format!("dyn ({})", s),
-                    Ok(s) => format!("dyn {}", s),
-                    Err(_) => format!("dyn <type>")
+                let (sugg, app) = match sess.codemap().span_to_snippet(span) {
+                    Ok(ref s) if is_global => (format!("dyn ({})", s),
+                                               Applicability::MachineApplicable),
+                    Ok(s) => (format!("dyn {}", s), Applicability::MachineApplicable),
+                    Err(_) => (format!("dyn <type>"), Applicability::HasPlaceholders)
                 };
-                db.span_suggestion(span, "use `dyn`", sugg);
+                db.span_suggestion_with_applicability(span, "use `dyn`", sugg, app);
+            }
+            BuiltinLintDiagnostics::AbsPathWithModule(span) => {
+                let (sugg, app) = match sess.codemap().span_to_snippet(span) {
+                    Ok(ref s) => {
+                        // FIXME(Manishearth) ideally the emitting code
+                        // can tell us whether or not this is global
+                        let opt_colon = if s.trim_left().starts_with("::") {
+                            ""
+                        } else {
+                            "::"
+                        };
+
+                        (format!("crate{}{}", opt_colon, s), Applicability::MachineApplicable)
+                    }
+                    Err(_) => (format!("crate::<path>"), Applicability::HasPlaceholders)
+                };
+                db.span_suggestion_with_applicability(span, "use `crate`", sugg, app);
             }
         }
     }

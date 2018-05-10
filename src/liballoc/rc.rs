@@ -259,7 +259,7 @@ use core::ops::CoerceUnsized;
 use core::ptr::{self, NonNull};
 use core::convert::From;
 
-use alloc::{Global, Alloc, Layout, Opaque, box_free};
+use alloc::{Global, Alloc, Layout, Opaque, box_free, oom};
 use string::String;
 use vec::Vec;
 
@@ -668,7 +668,7 @@ impl<T: ?Sized> Rc<T> {
         let layout = Layout::for_value(&*fake_ptr);
 
         let mem = Global.alloc(layout)
-            .unwrap_or_else(|_| Global.oom());
+            .unwrap_or_else(|_| oom());
 
         // Initialize the real RcBox
         let inner = set_data_ptr(ptr as *mut T, mem.as_ptr() as *mut u8) as *mut RcBox<T>;
@@ -681,7 +681,8 @@ impl<T: ?Sized> Rc<T> {
 
     fn from_box(v: Box<T>) -> Rc<T> {
         unsafe {
-            let bptr = Box::into_raw(v);
+            let box_unique = Box::into_unique(v);
+            let bptr = box_unique.as_ptr();
 
             let value_size = size_of_val(&*bptr);
             let ptr = Self::allocate_for_ptr(bptr);
@@ -693,7 +694,7 @@ impl<T: ?Sized> Rc<T> {
                 value_size);
 
             // Free the allocation without dropping its contents
-            box_free(bptr);
+            box_free(box_unique);
 
             Rc { ptr: NonNull::new_unchecked(ptr), phantom: PhantomData }
         }

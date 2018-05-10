@@ -23,7 +23,7 @@ use rustc::util::nodemap::{FxHashMap, FxHashSet};
 use rustc_resolve as resolve;
 use rustc_metadata::creader::CrateLoader;
 use rustc_metadata::cstore::CStore;
-use rustc_back::target::TargetTriple;
+use rustc_target::spec::TargetTriple;
 
 use syntax::ast::NodeId;
 use syntax::codemap;
@@ -177,7 +177,7 @@ pub fn run_core(search_paths: SearchPaths,
                 None,
                 codemap.clone(),
                 pretty,
-                sessopts.debugging_opts.approximate_suggestions,
+                sessopts.debugging_opts.suggestion_applicability,
             ).ui_testing(sessopts.debugging_opts.ui_testing)
         ),
         ErrorOutputType::Short(color_config) => Box::new(

@@ -9,7 +9,6 @@
 // except according to those terms.
 
 use dep_graph::{DepConstructor, DepNode};
-use errors::DiagnosticBuilder;
 use hir::def_id::{CrateNum, DefId, DefIndex};
 use hir::def::{Def, Export};
 use hir::{self, TraitCandidate, ItemLocalId, TransFnAttrs};
@@ -32,20 +31,21 @@ use mir;
 use mir::interpret::{GlobalId};
 use session::{CompileResult, CrateDisambiguator};
 use session::config::OutputFilenames;
-use traits::Vtable;
-use traits::query::{CanonicalProjectionGoal, CanonicalTyGoal, NoSolution};
+use traits::{self, Vtable};
+use traits::query::{CanonicalPredicateGoal, CanonicalProjectionGoal,
+                    CanonicalTyGoal, NoSolution};
 use traits::query::dropck_outlives::{DtorckConstraint, DropckOutlivesResult};
 use traits::query::normalize::NormalizationResult;
 use traits::specialization_graph;
-use traits::Clause;
-use ty::{self, CrateInherentImpls, ParamEnvAnd, Slice, Ty, TyCtxt};
+use traits::Clauses;
+use ty::{self, CrateInherentImpls, ParamEnvAnd, Ty, TyCtxt};
 use ty::steal::Steal;
 use ty::subst::Substs;
 use util::nodemap::{DefIdSet, DefIdMap, ItemLocalSet};
-use util::common::{profq_msg, ErrorReported, ProfileQueriesMsg};
+use util::common::{ErrorReported};
 
 use rustc_data_structures::indexed_set::IdxSetBuf;
-use rustc_back::PanicStrategy;
+use rustc_target::spec::PanicStrategy;
 use rustc_data_structures::indexed_vec::IndexVec;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::stable_hasher::StableVec;
@@ -67,7 +67,6 @@ pub use self::plumbing::force_from_dep_node;
 
 mod job;
 pub use self::job::{QueryJob, QueryInfo};
-use self::job::QueryResult;
 
 mod keys;
 pub use self::keys::Key;
@@ -212,7 +211,7 @@ define_maps! { <'tcx>
 
     /// Borrow checks the function body. If this is a closure, returns
     /// additional requirements that the closure's creator must verify.
-    [] fn mir_borrowck: MirBorrowCheck(DefId) -> Option<mir::ClosureRegionRequirements<'tcx>>,
+    [] fn mir_borrowck: MirBorrowCheck(DefId) -> mir::BorrowCheckResult<'tcx>,
 
     /// Gets a complete map from all types to their inherent impls.
     /// Not meant to be used directly outside of coherence.
@@ -433,6 +432,12 @@ define_maps! { <'tcx>
         NoSolution,
     >,
 
+    /// Do not call this query directly: invoke `infcx.predicate_may_hold()` or
+    /// `infcx.predicate_must_hold()` instead.
+    [] fn evaluate_obligation: EvaluateObligation(
+        CanonicalPredicateGoal<'tcx>
+    ) -> Result<traits::EvaluationResult, traits::OverflowError>,
+
     [] fn substitute_normalize_and_test_predicates:
         substitute_normalize_and_test_predicates_node((DefId, &'tcx Substs<'tcx>)) -> bool,
 
@@ -445,7 +450,11 @@ define_maps! { <'tcx>
 
     [] fn features_query: features_node(CrateNum) -> Lrc<feature_gate::Features>,
 
-    [] fn program_clauses_for: ProgramClausesFor(DefId) -> Lrc<&'tcx Slice<Clause<'tcx>>>,
+    [] fn program_clauses_for: ProgramClausesFor(DefId) -> Clauses<'tcx>,
+
+    [] fn program_clauses_for_env: ProgramClausesForEnv(
+        ty::ParamEnv<'tcx>
+    ) -> Clauses<'tcx>,
 
     [] fn wasm_custom_sections: WasmCustomSections(CrateNum) -> Lrc<Vec<DefId>>,
     [] fn wasm_import_module_map: WasmImportModuleMap(CrateNum)

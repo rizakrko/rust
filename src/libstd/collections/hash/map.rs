@@ -11,7 +11,7 @@
 use self::Entry::*;
 use self::VacantEntryState::*;
 
-use alloc::{Global, Alloc, CollectionAllocErr};
+use alloc::{CollectionAllocErr, oom};
 use cell::Cell;
 use borrow::Borrow;
 use cmp::max;
@@ -33,6 +33,7 @@ const MIN_NONZERO_RAW_CAPACITY: usize = 32;     // must be a power of two
 struct DefaultResizePolicy;
 
 impl DefaultResizePolicy {
+    #[inline]
     fn new() -> DefaultResizePolicy {
         DefaultResizePolicy
     }
@@ -784,7 +785,7 @@ impl<K, V, S> HashMap<K, V, S>
     pub fn reserve(&mut self, additional: usize) {
         match self.try_reserve(additional) {
             Err(CollectionAllocErr::CapacityOverflow) => panic!("capacity overflow"),
-            Err(CollectionAllocErr::AllocErr) => Global.oom(),
+            Err(CollectionAllocErr::AllocErr) => oom(),
             Ok(()) => { /* yay */ }
          }
     }

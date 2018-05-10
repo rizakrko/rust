@@ -11,6 +11,7 @@
 use std::ffi::CString;
 use std::ptr;
 
+use attributes;
 use libc::c_uint;
 use rustc::middle::allocator::AllocatorKind;
 use rustc::ty::TyCtxt;
@@ -43,13 +44,11 @@ pub(crate) unsafe fn trans(tcx: TyCtxt, mods: &ModuleLlvm, kind: AllocatorKind) 
                 AllocatorTy::Ptr => args.push(i8p),
                 AllocatorTy::Usize => args.push(usize),
 
-                AllocatorTy::Bang |
                 AllocatorTy::ResultPtr |
                 AllocatorTy::Unit => panic!("invalid allocator arg"),
             }
         }
         let output = match method.output {
-            AllocatorTy::Bang => None,
             AllocatorTy::ResultPtr => Some(i8p),
             AllocatorTy::Unit => None,
 
@@ -69,6 +68,9 @@ pub(crate) unsafe fn trans(tcx: TyCtxt, mods: &ModuleLlvm, kind: AllocatorKind) 
         if tcx.sess.target.target.options.default_hidden_visibility {
             llvm::LLVMRustSetVisibility(llfn, llvm::Visibility::Hidden);
         }
+       if tcx.sess.target.target.options.requires_uwtable {
+           attributes::emit_uwtable(llfn, true);
+       }
 
         let callee = CString::new(kind.fn_name(method.name)).unwrap();
         let callee = llvm::LLVMRustGetOrInsertFunction(llmod,

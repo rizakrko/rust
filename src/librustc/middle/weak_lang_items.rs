@@ -13,7 +13,7 @@
 use session::config;
 use middle::lang_items;
 
-use rustc_back::PanicStrategy;
+use rustc_target::spec::PanicStrategy;
 use syntax::ast;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
@@ -151,4 +151,5 @@ weak_lang_items! {
     panic_fmt,          PanicFmtLangItem,           rust_begin_unwind;
     eh_personality,     EhPersonalityLangItem,      rust_eh_personality;
     eh_unwind_resume,   EhUnwindResumeLangItem,     rust_eh_unwind_resume;
+    oom,                OomLangItem,                rust_oom;
 }

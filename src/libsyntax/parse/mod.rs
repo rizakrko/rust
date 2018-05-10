@@ -298,14 +298,10 @@ pub fn char_lit(lit: &str, diag: Option<(Span, &Handler)>) -> (char, isize) {
     }
 }
 
-pub fn escape_default(s: &str) -> String {
-    s.chars().map(char::escape_default).flat_map(|x| x).collect()
-}
-
 /// Parse a string representing a string literal into its final form. Does
 /// unescaping.
 pub fn str_lit(lit: &str, diag: Option<(Span, &Handler)>) -> String {
-    debug!("parse_str_lit: given {}", escape_default(lit));
+    debug!("str_lit: given {}", lit.escape_default());
     let mut res = String::with_capacity(lit.len());
 
     let error = |i| format!("lexer should have rejected {} at {}", lit, i);
@@ -374,7 +370,7 @@ pub fn str_lit(lit: &str, diag: Option<(Span, &Handler)>) -> String {
 /// Parse a string representing a raw string literal into its final form. The
 /// only operation this does is convert embedded CRLF into a single LF.
 pub fn raw_str_lit(lit: &str) -> String {
-    debug!("raw_str_lit: given {}", escape_default(lit));
+    debug!("raw_str_lit: given {}", lit.escape_default());
     let mut res = String::with_capacity(lit.len());
 
     let mut chars = lit.chars().peekable();
@@ -423,13 +419,24 @@ pub fn lit_token(lit: token::Lit, suf: Option<Symbol>, diag: Option<(Span, &Hand
         token::Integer(s) => (false, integer_lit(&s.as_str(), suf, diag)),
         token::Float(s) => (false, float_lit(&s.as_str(), suf, diag)),
 
-        token::Str_(s) => {
-            let s = Symbol::intern(&str_lit(&s.as_str(), diag));
-            (true, Some(LitKind::Str(s, ast::StrStyle::Cooked)))
+        token::Str_(mut sym) => {
+            // If there are no characters requiring special treatment we can
+            // reuse the symbol from the Token. Otherwise, we must generate a
+            // new symbol because the string in the LitKind is different to the
+            // string in the Token.
+            let s = &sym.as_str();
+            if s.as_bytes().iter().any(|&c| c == b'\\' || c == b'\r') {
+                sym = Symbol::intern(&str_lit(s, diag));
+            }
+            (true, Some(LitKind::Str(sym, ast::StrStyle::Cooked)))
         }
-        token::StrRaw(s, n) => {
-            let s = Symbol::intern(&raw_str_lit(&s.as_str()));
-            (true, Some(LitKind::Str(s, ast::StrStyle::Raw(n))))
+        token::StrRaw(mut sym, n) => {
+            // Ditto.
+            let s = &sym.as_str();
+            if s.contains('\r') {
+                sym = Symbol::intern(&raw_str_lit(s));
+            }
+            (true, Some(LitKind::Str(sym, ast::StrStyle::Raw(n))))
         }
         token::ByteStr(i) => {
             (true, Some(LitKind::ByteStr(byte_str_lit(&i.as_str()))))
@@ -678,7 +685,7 @@ mod tests {
     use syntax_pos::{self, Span, BytePos, Pos, NO_EXPANSION};
     use codemap::{respan, Spanned};
     use ast::{self, Ident, PatKind};
-    use abi::Abi;
+    use rustc_target::spec::abi::Abi;
     use attr::first_attr_value_str_by_name;
     use parse;
     use parse::parser::Parser;

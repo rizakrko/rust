@@ -41,7 +41,7 @@
 //! This order consistency is required in a few places in rustc, for
 //! example generator inference, and possibly also HIR borrowck.
 
-use syntax::abi::Abi;
+use rustc_target::spec::abi::Abi;
 use syntax::ast::{NodeId, CRATE_NODE_ID, Name, Attribute};
 use syntax_pos::Span;
 use hir::*;
@@ -404,7 +404,7 @@ pub fn walk_local<'v, V: Visitor<'v>>(visitor: &mut V, local: &'v Local) {
     // Intentionally visiting the expr first - the initialization expr
     // dominates the local's definition.
     walk_list!(visitor, visit_expr, &local.init);
-
+    walk_list!(visitor, visit_attribute, local.attrs.iter());
     visitor.visit_id(local.id);
     visitor.visit_pat(&local.pat);
     walk_list!(visitor, visit_ty, &local.ty);
@@ -731,6 +731,7 @@ pub fn walk_generic_param<'v, V: Visitor<'v>>(visitor: &mut V, param: &'v Generi
             visitor.visit_name(ty_param.span, ty_param.name);
             walk_list!(visitor, visit_ty_param_bound, &ty_param.bounds);
             walk_list!(visitor, visit_ty, &ty_param.default);
+            walk_list!(visitor, visit_attribute, ty_param.attrs.iter());
         }
     }
 }

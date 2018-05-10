@@ -25,7 +25,7 @@ use compile;
 use install;
 use dist;
 use util::{exe, libdir, add_lib_path};
-use {Build, Mode};
+use {Build, Mode, DocTests};
 use cache::{INTERNER, Interned, Cache};
 use check;
 use test;
@@ -111,27 +111,34 @@ struct StepDescription {
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-struct PathSet {
-    set: BTreeSet<PathBuf>,
+pub enum PathSet {
+    Set (BTreeSet<PathBuf>),
+    Suite (PathBuf)
 }
 
 impl PathSet {
     fn empty() -> PathSet {
-        PathSet { set: BTreeSet::new() }
+        PathSet::Set(BTreeSet::new())
     }
 
     fn one<P: Into<PathBuf>>(path: P) -> PathSet {
         let mut set = BTreeSet::new();
         set.insert(path.into());
-        PathSet { set }
+        PathSet::Set(set)
     }
 
     fn has(&self, needle: &Path) -> bool {
-        self.set.iter().any(|p| p.ends_with(needle))
+        match self {
+            PathSet::Set(set) => set.iter().any(|p| p.ends_with(needle)),
+            PathSet::Suite(_) => false
+        }
     }
 
     fn path(&self, builder: &Builder) -> PathBuf {
-        self.set.iter().next().unwrap_or(&builder.build.src).to_path_buf()
+        match self {
+            PathSet::Set(set) => set.iter().next().unwrap_or(&builder.build.src).to_path_buf(),
+            PathSet::Suite(path) => PathBuf::from(path)
+        }
     }
 }
 
@@ -203,7 +210,10 @@ impl StepDescription {
             for path in paths {
                 let mut attempted_run = false;
                 for (desc, should_run) in v.iter().zip(&should_runs) {
-                    if let Some(pathset) = should_run.pathset_for_path(path) {
+                    if let Some(suite) = should_run.is_suite_path(path) {
+                        attempted_run = true;
+                        desc.maybe_run(builder, suite);
+                    } else if let Some(pathset) = should_run.pathset_for_path(path) {
                         attempted_run = true;
                         desc.maybe_run(builder, pathset);
                     }
@@ -250,7 +260,7 @@ impl<'a> ShouldRun<'a> {
         for krate in self.builder.in_tree_crates(name) {
             set.insert(PathBuf::from(&krate.path));
         }
-        self.paths.insert(PathSet { set });
+        self.paths.insert(PathSet::Set(set));
         self
     }
 
@@ -268,9 +278,21 @@ impl<'a> ShouldRun<'a> {
 
     // multiple aliases for the same job
     pub fn paths(mut self, paths: &[&str]) -> Self {
-        self.paths.insert(PathSet {
-            set: paths.iter().map(PathBuf::from).collect(),
-        });
+        self.paths.insert(PathSet::Set(paths.iter().map(PathBuf::from).collect()));
+        self
+    }
+
+    pub fn is_suite_path(&self, path: &Path) -> Option<&PathSet> {
+        self.paths.iter().find(|pathset| {
+            match pathset {
+                PathSet::Suite(p) => path.starts_with(p),
+                PathSet::Set(_) => false
+            }
+        })
+    }
+
+    pub fn suite_path(mut self, suite: &str) -> Self {
+        self.paths.insert(PathSet::Suite(PathBuf::from(suite)));
         self
     }
 
@@ -323,7 +345,7 @@ impl<'a> Builder<'a> {
                 test::Cargotest, test::Cargo, test::Rls, test::ErrorIndex, test::Distcheck,
                 test::RunMakeFullDeps,
                 test::Nomicon, test::Reference, test::RustdocBook, test::RustByExample,
-                test::TheBook, test::UnstableBook,
+                test::TheBook, test::UnstableBook, test::RustcBook,
                 test::Rustfmt, test::Miri, test::Clippy, test::RustdocJS, test::RustdocTheme,
                 // Run run-make last, since these won't pass without make on Windows
                 test::RunMake, test::RustdocUi),
@@ -331,7 +353,7 @@ impl<'a> Builder<'a> {
             Kind::Doc => describe!(doc::UnstableBook, doc::UnstableBookGen, doc::TheBook,
                 doc::Standalone, doc::Std, doc::Test, doc::WhitelistedRustc, doc::Rustc,
                 doc::ErrorIndex, doc::Nomicon, doc::Reference, doc::Rustdoc, doc::RustByExample,
-                doc::CargoBook),
+                doc::RustcBook, doc::CargoBook),
             Kind::Dist => describe!(dist::Docs, dist::RustcDocs, dist::Mingw, dist::Rustc,
                 dist::DebuggerScripts, dist::Std, dist::Analysis, dist::Src,
                 dist::PlainSourceTarball, dist::Cargo, dist::Rls, dist::Rustfmt, dist::Extended,
@@ -372,8 +394,10 @@ impl<'a> Builder<'a> {
         }
         let mut help = String::from("Available paths:\n");
         for pathset in should_run.paths {
-            for path in pathset.set {
-                help.push_str(format!("    ./x.py {} {}\n", subcommand, path.display()).as_str());
+            if let PathSet::Set(set) = pathset{
+                set.iter().for_each(|path| help.push_str(
+                    format!("    ./x.py {} {}\n", subcommand, path.display()).as_str()
+                    ))
             }
         }
         Some(help)
@@ -403,6 +427,7 @@ impl<'a> Builder<'a> {
             graph: RefCell::new(Graph::new()),
             parent: Cell::new(None),
         };
+
 
         if kind == Kind::Dist {
             assert!(!builder.config.test_miri, "Do not distribute with miri enabled.\n\
@@ -591,6 +616,8 @@ impl<'a> Builder<'a> {
                 format!("{} {}", env::var("RUSTFLAGS").unwrap_or_default(), extra_args));
         }
 
+        let want_rustdoc = self.doc_tests != DocTests::No;
+
         // Customize the compiler we're running. Specify the compiler to cargo
         // as our shim and then pass it some various options used to configure
         // how the actual compiler itself is called.
@@ -607,7 +634,7 @@ impl<'a> Builder<'a> {
              .env("RUSTC_LIBDIR", self.rustc_libdir(compiler))
              .env("RUSTC_RPATH", self.config.rust_rpath.to_string())
              .env("RUSTDOC", self.out.join("bootstrap/debug/rustdoc"))
-             .env("RUSTDOC_REAL", if cmd == "doc" || cmd == "test" {
+             .env("RUSTDOC_REAL", if cmd == "doc" || (cmd == "test" && want_rustdoc) {
                  self.rustdoc(compiler.host)
              } else {
                  PathBuf::from("/path/to/nowhere/rustdoc/not/required")
@@ -624,7 +651,7 @@ impl<'a> Builder<'a> {
         if let Some(ref error_format) = self.config.rustc_error_format {
             cargo.env("RUSTC_ERROR_FORMAT", error_format);
         }
-        if cmd != "build" && cmd != "check" {
+        if cmd != "build" && cmd != "check" && want_rustdoc {
             cargo.env("RUSTDOC_LIBDIR", self.rustc_libdir(self.compiler(2, self.config.build)));
         }
 
@@ -706,6 +733,10 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_PRINT_STEP_TIMINGS", "1");
         }
 
+        if self.config.backtrace_on_ice {
+            cargo.env("RUSTC_BACKTRACE_ON_ICE", "1");
+        }
+
         cargo.env("RUSTC_VERBOSE", format!("{}", self.verbosity));
 
         // in std, we want to avoid denying warnings for stage 0 as that makes cfg's painful.
@@ -720,7 +751,11 @@ impl<'a> Builder<'a> {
         // the options through environment variables that are fetched and understood by both.
         //
         // FIXME: the guard against msvc shouldn't need to be here
-        if !target.contains("msvc") {
+        if target.contains("msvc") {
+            if let Some(ref cl) = self.config.llvm_clang_cl {
+                cargo.env("CC", cl).env("CXX", cl);
+            }
+        } else {
             let ccache = self.config.ccache.as_ref();
             let ccacheify = |s: &Path| {
                 let ccache = match ccache {
@@ -1400,6 +1435,41 @@ mod __test {
             compile::Test {
                 compiler: Compiler { host: b, stage: 2 },
                 target: c,
+            },
+        ]);
+    }
+
+    #[test]
+    fn test_with_no_doc_stage0() {
+        let mut config = configure(&[], &[]);
+        config.stage = Some(0);
+        config.cmd = Subcommand::Test {
+            paths: vec!["src/libstd".into()],
+            test_args: vec![],
+            rustc_args: vec![],
+            fail_fast: true,
+            doc_tests: DocTests::No,
+        };
+
+        let build = Build::new(config);
+        let mut builder = Builder::new(&build);
+
+        let host = INTERNER.intern_str("A");
+
+        builder.run_step_descriptions(
+            &[StepDescription::from::<test::Crate>()],
+            &["src/libstd".into()],
+        );
+
+        // Ensure we don't build any compiler artifacts.
+        assert!(builder.cache.all::<compile::Rustc>().is_empty());
+        assert_eq!(first(builder.cache.all::<test::Crate>()), &[
+            test::Crate {
+                compiler: Compiler { host, stage: 0 },
+                target: host,
+                mode: Mode::Libstd,
+                test_kind: test::TestKind::Test,
+                krate: INTERNER.intern_str("std"),
             },
         ]);
     }

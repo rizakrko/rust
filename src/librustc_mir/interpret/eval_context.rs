@@ -5,7 +5,7 @@ use rustc::hir::def::Def;
 use rustc::hir::map::definitions::DefPathData;
 use rustc::middle::const_val::{ConstVal, ErrKind};
 use rustc::mir;
-use rustc::ty::layout::{self, Size, Align, HasDataLayout, LayoutOf, TyLayout};
+use rustc::ty::layout::{self, Size, Align, HasDataLayout, IntegerExt, LayoutOf, TyLayout};
 use rustc::ty::subst::{Subst, Substs};
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::maps::TyCtxtAt;
@@ -162,7 +162,8 @@ impl<'c, 'b, 'a, 'mir, 'tcx, M: Machine<'mir, 'tcx>> layout::HasTyCtxt<'tcx>
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'mir, 'tcx>> LayoutOf<Ty<'tcx>> for &'a EvalContext<'a, 'mir, 'tcx, M> {
+impl<'a, 'mir, 'tcx, M: Machine<'mir, 'tcx>> LayoutOf for &'a EvalContext<'a, 'mir, 'tcx, M> {
+    type Ty = Ty<'tcx>;
     type TyLayout = EvalResult<'tcx, TyLayout<'tcx>>;
 
     fn layout_of(self, ty: Ty<'tcx>) -> Self::TyLayout {
@@ -171,8 +172,9 @@ impl<'a, 'mir, 'tcx, M: Machine<'mir, 'tcx>> LayoutOf<Ty<'tcx>> for &'a EvalCont
     }
 }
 
-impl<'c, 'b, 'a, 'mir, 'tcx, M: Machine<'mir, 'tcx>> LayoutOf<Ty<'tcx>>
+impl<'c, 'b, 'a, 'mir, 'tcx, M: Machine<'mir, 'tcx>> LayoutOf
     for &'c &'b mut EvalContext<'a, 'mir, 'tcx, M> {
+    type Ty = Ty<'tcx>;
     type TyLayout = EvalResult<'tcx, TyLayout<'tcx>>;
 
     #[inline]
@@ -511,7 +513,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                     // it emits in debug mode) is performance, but it doesn't cost us any performance in miri.
                     // If, however, the compiler ever starts transforming unchecked intrinsics into unchecked binops,
                     // we have to go back to just ignoring the overflow here.
-                    return err!(OverflowingMath);
+                    return err!(Overflow(bin_op));
                 }
             }
 
@@ -652,6 +654,9 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                         if self.type_is_fat_ptr(src.ty) {
                             match (src.value, self.type_is_fat_ptr(dest_ty)) {
                                 (Value::ByRef { .. }, _) |
+                                // pointers to extern types
+                                (Value::ByVal(_),_) |
+                                // slices and trait objects to other slices/trait objects
                                 (Value::ByValPair(..), true) => {
                                     let valty = ValTy {
                                         value: src.value,
@@ -659,6 +664,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                                     };
                                     self.write_value(valty, dest)?;
                                 }
+                                // slices and trait objects to thin pointers (dropping the metadata)
                                 (Value::ByValPair(data, _), false) => {
                                     let valty = ValTy {
                                         value: Value::ByVal(data),
@@ -666,9 +672,25 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                                     };
                                     self.write_value(valty, dest)?;
                                 }
-                                (Value::ByVal(_), _) => bug!("expected fat ptr"),
                             }
                         } else {
+                            let src_layout = self.layout_of(src.ty)?;
+                            match src_layout.variants {
+                                layout::Variants::Single { index } => {
+                                    if let Some(def) = src.ty.ty_adt_def() {
+                                        let discr_val = def
+                                            .discriminant_for_variant(*self.tcx, index)
+                                            .val;
+                                        return self.write_primval(
+                                            dest,
+                                            PrimVal::Bytes(discr_val),
+                                            dest_ty);
+                                    }
+                                }
+                                layout::Variants::Tagged { .. } |
+                                layout::Variants::NicheFilling { .. } => {},
+                            }
+
                             let src_val = self.value_to_primval(src)?;
                             let dest_val = self.cast_primval(src_val, src.ty, dest_ty)?;
                             let valty = ValTy {
@@ -743,35 +765,13 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
 
             Discriminant(ref place) => {
                 let ty = self.place_ty(place);
-                let layout = self.layout_of(ty)?;
                 let place = self.eval_place(place)?;
                 let discr_val = self.read_discriminant_value(place, ty)?;
-                match layout.variants {
-                    layout::Variants::Single { index } => {
-                        assert_eq!(discr_val, index as u128);
-                    }
-                    layout::Variants::Tagged { .. } |
-                    layout::Variants::NicheFilling { .. } => {
-                        if let ty::TyAdt(adt_def, _) = ty.sty {
-                            trace!("Read discriminant {}, valid discriminants {:?}", discr_val, adt_def.discriminants(*self.tcx).collect::<Vec<_>>());
-                            if adt_def.discriminants(*self.tcx).all(|v| {
-                                discr_val != v.val
-                            })
-                            {
-                                return err!(InvalidDiscriminant);
-                            }
-                        } else {
-                            bug!("rustc only generates Rvalue::Discriminant for enums");
-                        }
-                    }
-                }
                 self.write_primval(dest, PrimVal::Bytes(discr_val), dest_ty)?;
             }
         }
 
-        if log_enabled!(::log::Level::Trace) {
-            self.dump_local(dest);
-        }
+        self.dump_local(dest);
 
         Ok(())
     }
@@ -837,38 +837,91 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
         }
     }
 
+    /// reads a tag and produces the corresponding variant index
+    pub fn read_discriminant_as_variant_index(
+        &mut self,
+        place: Place,
+        ty: Ty<'tcx>,
+    ) -> EvalResult<'tcx, usize> {
+        let layout = self.layout_of(ty)?;
+        match layout.variants {
+            ty::layout::Variants::Single { index } => Ok(index),
+            ty::layout::Variants::Tagged { .. } => {
+                let discr_val = self.read_discriminant_value(place, ty)?;
+                ty
+                    .ty_adt_def()
+                    .expect("tagged layout for non adt")
+                    .discriminants(self.tcx.tcx)
+                    .position(|var| var.val == discr_val)
+                    .ok_or_else(|| EvalErrorKind::InvalidDiscriminant.into())
+            }
+            ty::layout::Variants::NicheFilling { .. } => {
+                let discr_val = self.read_discriminant_value(place, ty)?;
+                assert_eq!(discr_val as usize as u128, discr_val);
+                Ok(discr_val as usize)
+            },
+        }
+    }
+
     pub fn read_discriminant_value(
         &mut self,
         place: Place,
         ty: Ty<'tcx>,
     ) -> EvalResult<'tcx, u128> {
         let layout = self.layout_of(ty)?;
-        //trace!("read_discriminant_value {:#?}", layout);
+        trace!("read_discriminant_value {:#?}", layout);
+        if layout.abi == layout::Abi::Uninhabited {
+            return Ok(0);
+        }
 
         match layout.variants {
             layout::Variants::Single { index } => {
-                return Ok(index as u128);
+                let discr_val = ty.ty_adt_def().map_or(
+                    index as u128,
+                    |def| def.discriminant_for_variant(*self.tcx, index).val);
+                return Ok(discr_val);
             }
             layout::Variants::Tagged { .. } |
             layout::Variants::NicheFilling { .. } => {},
         }
 
         let (discr_place, discr) = self.place_field(place, mir::Field::new(0), layout)?;
+        trace!("discr place: {:?}, {:?}", discr_place, discr);
         let raw_discr = self.value_to_primval(ValTy {
             value: self.read_place(discr_place)?,
             ty: discr.ty
         })?;
         let discr_val = match layout.variants {
             layout::Variants::Single { .. } => bug!(),
-            layout::Variants::Tagged { .. } => raw_discr.to_bytes()?,
+            // FIXME: should we catch invalid discriminants here?
+            layout::Variants::Tagged { .. } => {
+                if discr.ty.is_signed() {
+                    let i = raw_discr.to_bytes()? as i128;
+                    // going from layout tag type to typeck discriminant type
+                    // requires first sign extending with the layout discriminant
+                    let amt = 128 - discr.size.bits();
+                    let sexted = (i << amt) >> amt;
+                    // and then zeroing with the typeck discriminant type
+                    let discr_ty = ty
+                        .ty_adt_def().expect("tagged layout corresponds to adt")
+                        .repr
+                        .discr_type();
+                    let discr_ty = layout::Integer::from_attr(self.tcx.tcx, discr_ty);
+                    let amt = 128 - discr_ty.size().bits();
+                    let truncatee = sexted as u128;
+                    (truncatee << amt) >> amt
+                } else {
+                    raw_discr.to_bytes()?
+                }
+            },
             layout::Variants::NicheFilling {
                 dataful_variant,
                 ref niche_variants,
                 niche_start,
                 ..
             } => {
-                let variants_start = niche_variants.start as u128;
-                let variants_end = niche_variants.end as u128;
+                let variants_start = *niche_variants.start() as u128;
+                let variants_end = *niche_variants.end() as u128;
                 match raw_discr {
                     PrimVal::Ptr(_) => {
                         assert!(niche_start == 0);
@@ -910,13 +963,20 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                                layout::Abi::Uninhabited);
                 }
             }
-            layout::Variants::Tagged { .. } => {
+            layout::Variants::Tagged { ref tag, .. } => {
                 let discr_val = dest_ty.ty_adt_def().unwrap()
                     .discriminant_for_variant(*self.tcx, variant_index)
                     .val;
 
-                let (discr_dest, discr) = self.place_field(dest, mir::Field::new(0), layout)?;
-                self.write_primval(discr_dest, PrimVal::Bytes(discr_val), discr.ty)?;
+                // raw discriminants for enums are isize or bigger during
+                // their computation, but the in-memory tag is the smallest possible
+                // representation
+                let size = tag.value.size(self.tcx.tcx).bits();
+                let amt = 128 - size;
+                let discr_val = (discr_val << amt) >> amt;
+
+                let (discr_dest, tag) = self.place_field(dest, mir::Field::new(0), layout)?;
+                self.write_primval(discr_dest, PrimVal::Bytes(discr_val), tag.ty)?;
             }
             layout::Variants::NicheFilling {
                 dataful_variant,
@@ -927,7 +987,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                 if variant_index != dataful_variant {
                     let (niche_dest, niche) =
                         self.place_field(dest, mir::Field::new(0), layout)?;
-                    let niche_value = ((variant_index - niche_variants.start) as u128)
+                    let niche_value = ((variant_index - niche_variants.start()) as u128)
                         .wrapping_add(niche_start);
                     self.write_primval(niche_dest, PrimVal::Bytes(niche_value), niche.ty)?;
                 }
@@ -1145,19 +1205,18 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
                     _ if primval.is_undef() => false,
                     _ => bug!("write_value_to_ptr: invalid ByVal layout: {:#?}", layout)
                 };
-                self.memory.write_primval(dest.to_ptr()?, dest_align, primval, layout.size.bytes(), signed)
+                self.memory.write_primval(dest, dest_align, primval, layout.size.bytes(), signed)
             }
             Value::ByValPair(a_val, b_val) => {
-                let ptr = dest.to_ptr()?;
                 trace!("write_value_to_ptr valpair: {:#?}", layout);
                 let (a, b) = match layout.abi {
                     layout::Abi::ScalarPair(ref a, ref b) => (&a.value, &b.value),
                     _ => bug!("write_value_to_ptr: invalid ByValPair layout: {:#?}", layout)
                 };
                 let (a_size, b_size) = (a.size(&self), b.size(&self));
-                let a_ptr = ptr;
+                let a_ptr = dest;
                 let b_offset = a_size.abi_align(b.align(&self));
-                let b_ptr = ptr.offset(b_offset.bytes(), &self)?.into();
+                let b_ptr = dest.offset(b_offset.bytes(), &self)?.into();
                 // TODO: What about signedess?
                 self.memory.write_primval(a_ptr, dest_align, a_val, a_size.bytes(), false)?;
                 self.memory.write_primval(b_ptr, dest_align, b_val, b_size.bytes(), false)
@@ -1282,6 +1341,13 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
 
     pub fn try_read_value(&self, ptr: Pointer, ptr_align: Align, ty: Ty<'tcx>) -> EvalResult<'tcx, Option<Value>> {
         use syntax::ast::FloatTy;
+
+        let layout = self.layout_of(ty)?;
+        self.memory.check_align(ptr, ptr_align)?;
+
+        if layout.size.bytes() == 0 {
+            return Ok(Some(Value::ByVal(PrimVal::Undef)));
+        }
 
         let ptr = ptr.to_ptr()?;
         let val = match ty.sty {
@@ -1505,6 +1571,9 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M
 
     pub fn dump_local(&self, place: Place) {
         // Debug output
+        if !log_enabled!(::log::Level::Trace) {
+            return;
+        }
         match place {
             Place::Local { frame, local } => {
                 let mut allocs = Vec::new();

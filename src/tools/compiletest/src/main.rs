@@ -23,9 +23,13 @@ extern crate libc;
 extern crate log;
 extern crate regex;
 #[macro_use]
+#[cfg(windows)]
+extern crate lazy_static;
+#[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
 extern crate test;
+extern crate rustfix;
 
 use std::env;
 use std::ffi::OsString;
@@ -610,7 +614,12 @@ pub fn is_test(file_name: &OsString) -> bool {
 }
 
 pub fn make_test(config: &Config, testpaths: &TestPaths) -> test::TestDescAndFn {
-    let early_props = EarlyProps::from_file(config, &testpaths.file);
+
+    let early_props = if config.mode == Mode::RunMake {
+        EarlyProps::from_file(config, &testpaths.file.join("Makefile"))
+    } else {
+        EarlyProps::from_file(config, &testpaths.file)
+    };
 
     // The `should-fail` annotation doesn't apply to pretty tests,
     // since we run the pretty printer across all tests by default.
